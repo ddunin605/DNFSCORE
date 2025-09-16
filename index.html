@@ -1,0 +1,233 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>떠닝의 DNF 점수 계산기 (Demo)</title>
+<style>
+  :root{--bg:#0e1117;--card:#161b22;--bd:#30363d;--txt:#e6edf3}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:var(--bg);color:var(--txt);margin:0}
+  .wrap{max-width:860px;margin:0 auto;padding:28px}
+  h1{margin:0 0 16px;font-size:26px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin:14px 0}
+  label{display:block;font-weight:600;margin:8px 0 6px}
+  input,select,button{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--bd);background:#0b1016;color:var(--txt)}
+  button{background:#1f6feb;border:0;font-weight:700;cursor:pointer}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  .row{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+  .muted{opacity:.8;font-size:13px}
+  .equip{display:grid;grid-template-columns:1.1fr 1.6fr .6fr .6fr .6fr;gap:8px;font-size:14px}
+  .equip > div{padding:8px;border-bottom:1px solid var(--bd)}
+  .equip .head{font-weight:700;border-bottom:2px solid var(--bd)}
+  .score{font-size:18px;font-weight:800}
+  .small{font-size:12px;opacity:.8}
+  .pill{display:inline-block;padding:3px 8px;border:1px solid var(--bd);border-radius:999px;font-size:12px;margin-left:6px}
+  .error{color:#ff7b72}
+</style>
+
+<div class="wrap">
+  <h1>떠닝의 DNF 점수 계산기 <span class="small">Demo</span></h1>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>서버</label>
+        <select id="server">
+          <option value="bakal">bakal</option>
+          <option value="cain">cain</option>
+          <option value="prey">prey</option>
+          <option value="diregie">diregie</option>
+          <option value="siroco">siroco</option>
+          <option value="hilder">hilder</option>
+          <option value="anton">anton</option>
+          <option value="casillas">casillas</option>
+        </select>
+      </div>
+      <div>
+        <label>닉네임 (URL 인코딩 자동)</label>
+        <input id="nickname" placeholder="예: 떠닝" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label>wordType</label>
+        <select id="wordType">
+          <option value="match">match (완전일치)</option>
+          <option value="full">full (전문검색, 2~12자)</option>
+        </select>
+      </div>
+      <div>
+        <label>API Key <span class="pill">주의: 깃 공개 금지!</span></label>
+        <input id="apikey" placeholder="예: abcdef..." />
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <button id="go">검색 → 장비 불러오기</button>
+      <div class="muted" style="margin-top:8px">
+        캐릭터 검색 → 첫 캐릭터 기준으로 장착 장비를 불러옵니다.
+        (필요하면 다중 결과 선택 로직 추가 가능)
+      </div>
+      <div id="msg" class="muted" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div id="result" class="card" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div>
+        <div id="charTitle" style="font-weight:800;font-size:18px"></div>
+        <div id="charMeta" class="muted"></div>
+      </div>
+      <div class="score">총 점수: <span id="totalScore">-</span></div>
+    </div>
+
+    <div id="equipTable" class="equip" style="margin-top:12px">
+      <div class="head">슬롯</div>
+      <div class="head">아이템</div>
+      <div class="head">강화</div>
+      <div class="head">증폭</div>
+      <div class="head">정제</div>
+      <!-- rows here -->
+    </div>
+    <div class="muted" style="margin-top:8px">
+      * 점수 공식은 샘플입니다. 아래 함수에서 가중치/룰을 자유롭게 바꿔 쓰세요.
+    </div>
+  </div>
+
+  <div id="error" class="card error" style="display:none"></div>
+</div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const msg = (t) => $("#msg").textContent = t || "";
+
+const api = {
+  charSearch(server, name, wordType, apikey, limit=1) {
+    const encName = encodeURIComponent(name.trim());
+    const url =
+      `https://api.neople.co.kr/df/servers/${server}/characters` +
+      `?characterName=${encName}&wordType=${wordType}&limit=${limit}&apikey=${apikey}`;
+    return fetch(url).then(r => r.json());
+  },
+  equip(server, characterId, apikey) {
+    const url =
+      `https://api.neople.co.kr/df/servers/${server}/characters/${characterId}/equip/equipment?apikey=${apikey}`;
+    return fetch(url).then(r => r.json());
+  },
+  // (원하면 status, avatar 등 추가)
+};
+
+// ===== 샘플 점수 공식 ===================================================
+// 자유롭게 수정 OK. 아이템 1개당 부분 점수를 합산.
+function scoreItem(it) {
+  // 일부 필드가 없을 수 있어 안전 접근
+  const reinforce = it?.reinforce ?? 0; // 강화
+  const amplify   = it?.amplify   ?? 0; // 증폭
+  const refine    = it?.refine    ?? 0; // 정제(무기)
+  // 고정/커스텀 옵션이 있으면 가산점 (존재 여부만 반영 – 세부 수치 파싱은 필요시 확장)
+  const hasFixed  = !!it?.fixedOption;
+  const hasCustom = !!it?.customOption;
+
+  let s = 0;
+  s += reinforce * 10;
+  s += amplify   * 12;
+  s += refine    * 2;
+  if (hasFixed)  s += 15;
+  if (hasCustom) s += 25;
+
+  // 신화/레전/에픽/유니크 가중치가 필요하면 it.itemRarity 검사해서 추가 (API 반환 필드에 따라 수정)
+  // if (it.itemRarity === '신화') s += 60;
+
+  return s;
+}
+
+function scoreAll(equipmentList=[]) {
+  return equipmentList.reduce((acc, it) => acc + scoreItem(it), 0);
+}
+// ======================================================================
+
+function renderEquip(list=[]) {
+  const box = $("#equipTable");
+  // 기존 행 제거(헤더 5칸 제외)
+  box.querySelectorAll(".rowItem")?.forEach(el => el.remove());
+
+  for (const it of list) {
+    const row = document.createElement("div");
+    row.className = "rowItem";
+    row.style.display = "contents";
+
+    const colSlot = document.createElement("div");
+    colSlot.textContent = it?.slotName || it?.slotId || "-";
+
+    const colName = document.createElement("div");
+    colName.innerHTML =
+      (it?.itemName || it?.itemId || "-") +
+      (it?.itemRarity ? ` <span class="pill">${it.itemRarity}</span>` : "");
+
+    const colReinf = document.createElement("div");
+    colReinf.textContent = (it?.reinforce ?? "-");
+
+    const colAmpl = document.createElement("div");
+    colAmpl.textContent = (it?.amplify ?? "-");
+
+    const colRef = document.createElement("div");
+    colRef.textContent = (it?.refine ?? "-");
+
+    row.append(colSlot, colName, colReinf, colAmpl, colRef);
+    box.appendChild(row);
+  }
+}
+
+async function run() {
+  $("#error").style.display = "none";
+  $("#result").style.display = "none";
+  msg("검색 중…");
+
+  const server = $("#server").value;
+  const nickname = $("#nickname").value.trim();
+  const apikey = $("#apikey").value.trim();
+  const wordType = $("#wordType").value;
+
+  if (!nickname || !apikey) {
+    msg("");
+    $("#error").style.display = "block";
+    $("#error").textContent = "닉네임과 API Key를 입력하세요.";
+    return;
+  }
+
+  try {
+    const search = await api.charSearch(server, nickname, wordType, apikey, 5);
+    const rows = search?.rows || [];
+    if (rows.length === 0) {
+      msg("");
+      $("#error").style.display = "block";
+      $("#error").textContent = "검색 결과가 없습니다. (닉네임/서버/wordType 확인)";
+      return;
+    }
+
+    // 우선 1번째 캐릭터 사용 (필요시 UI로 선택하게 확장)
+    const ch = rows[0];
+    msg(`캐릭터 선택: ${ch.characterName} (ID: ${ch.characterId})`);
+
+    const equip = await api.equip(server, ch.characterId, apikey);
+    const list = equip?.equipment || equip?.equipmentList || [];
+
+    $("#charTitle").textContent = `${ch.characterName}`;
+    $("#charMeta").textContent = `server=${server} • characterId=${ch.characterId}`;
+    renderEquip(list);
+
+    const total = scoreAll(list);
+    $("#totalScore").textContent = Math.round(total);
+    $("#result").style.display = "block";
+    msg("");
+  } catch (e) {
+    console.error(e);
+    msg("");
+    $("#error").style.display = "block";
+    $("#error").textContent = "요청 중 오류가 발생했습니다. (CORS, Key, 쿼터, 네트워크 등 확인)";
+  }
+}
+
+$("#go").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  await run();
+  e.target.disabled = false;
+});
+</script>
