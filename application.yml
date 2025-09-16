@@ -1,0 +1,6 @@
+server:
+  port: 8080
+
+neople:
+  apiBase: https://api.neople.co.kr/df
+  apiKey: ${NEOPLE_API_KEY}   # 환경변수로 주입 (키를 코드에 하드코딩하지 않음)
